@@ -1,7 +1,7 @@
 const ghauth = require('./')
 const authOptions = {
   // provide a clientId from a Github oAuth application registration
-  clientId: '123456',
+  clientId: process.env.CLIENT_ID || '123456',
 
   // ~/.config/awesome.json will store the token
   configName: 'awesome',

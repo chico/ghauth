@@ -6,13 +6,15 @@ const fetch = require('node-fetch')
 const appCfg = require('application-config')
 const querystring = require('querystring')
 const ora = require('ora')
+const clipboard = require('clipboardy')
+const open = require('open')
 
 const defaultUA = 'Magic Node.js application that does magic things with ghauth'
 const defaultScopes = []
 const defaultPasswordReplaceChar = '\u2714'
 
 // split a string at roughly `len` characters, being careful of word boundaries
-function newlineify (len, str) {
+function newlineify(len, str) {
   let s = ''
   let l = 0
   const sa = str.split(' ')
@@ -32,23 +34,41 @@ function newlineify (len, str) {
   return s
 }
 
-function sleep (s) {
+function sleep(s) {
   const ms = s * 1000
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function basicAuthHeader (user, pass) {
+function basicAuthHeader(user, pass) {
   return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`
 }
 
+// see https://stackoverflow.com/a/49959557/610106
+const keypress = async () => {
+  process.stdin.setRawMode(true)
+  return new Promise((resolve) =>
+    process.stdin.once('data', (data) => {
+      const byteArray = [...data]
+      if (byteArray.length > 0 && byteArray[0] === 3) {
+        console.log('^C')
+        process.exit(1)
+      }
+      process.stdin.setRawMode(false)
+      resolve()
+    })
+  )
+}
+
 // prompt the user for credentials
-async function deviceFlowPrompt (options) {
+async function deviceFlowPrompt(options) {
   const scopes = options.scopes || defaultScopes
-  const passwordReplaceChar = options.passwordReplaceChar || defaultPasswordReplaceChar
+  const passwordReplaceChar =
+    options.passwordReplaceChar || defaultPasswordReplaceChar
   const deviceCodeUrl = 'https://github.com/login/device/code'
   const fallbackDeviceAuthUrl = 'https://github.com/login/device'
   const accessTokenUrl = 'https://github.com/login/oauth/access_token'
-  const oauthAppsBaseUrl = 'https://github.com/settings/connections/applications'
+  const oauthAppsBaseUrl =
+    'https://github.com/settings/connections/applications'
   const userEndpointUrl = 'https://api.github.com/user'
   const patUrl = 'https://github.com/settings/tokens'
 
@@ -83,26 +103,35 @@ async function deviceFlowPrompt (options) {
   return tokenData
 
   // prompt for a personal access token with simple validation
-  async function patFlow () {
-    let patMsg = `Enter a 40 character personal access token generated at ${patUrl} ` +
-      (scopes.length ? `with the following scopes: ${scopes.join(', ')}` : '(no scopes necessary)') + '\n' +
+  async function patFlow() {
+    let patMsg =
+      `Enter a 40 character personal access token generated at ${patUrl} ` +
+      (scopes.length
+        ? `with the following scopes: ${scopes.join(', ')}`
+        : '(no scopes necessary)') +
+      '\n' +
       'PAT: '
     patMsg = newlineify(80, patMsg)
-    const pat = await read({ prompt: patMsg, silent: true, replace: passwordReplaceChar })
+    const pat = await read({
+      prompt: patMsg,
+      silent: true,
+      replace: passwordReplaceChar
+    })
     if (!pat) throw new TypeError('Empty personal access token received.')
-    if (pat.length !== 40) throw new TypeError('Personal access tokens must be 40 characters long')
+    if (pat.length !== 40)
+      throw new TypeError('Personal access tokens must be 40 characters long')
     const tokenData = { token: pat }
 
     return supplementUserData(tokenData)
   }
 
   // cancel deviceFlow if user presses enter``
-  function deviceFlowInterrupt () {
+  function deviceFlowInterrupt() {
     return new Promise((resolve, reject) => {
       process.stdin.on('keypress', keyPressHandler)
 
       interruptHandlerRef = keyPressHandler
-      function keyPressHandler (letter, key) {
+      function keyPressHandler(letter, key) {
         if (key.name === 'return') {
           endDeviceFlow = true
           resolve(false)
@@ -112,7 +141,7 @@ async function deviceFlowPrompt (options) {
   }
 
   // create a device flow session and return tokenData
-  async function deviceFlow () {
+  async function deviceFlow() {
     let currentInterval
     let currentDeviceCode
     let currentUserCode
@@ -120,28 +149,32 @@ async function deviceFlowPrompt (options) {
 
     await initializeNewDeviceFlow()
 
-    const authPrompt = '  Authorize with Github by opening this URL in a browser:' +
-                       '\n' +
-                       '\n' +
-                       `    ${verificationUri}` +
-                       '\n' +
-                       '\n' +
-                       '  and enter the following User Code:\n' +
-                       '  (or press ⏎ to enter a personal access token)\n'
+    console.log(
+      `Press any key to copy & paste the user code in ${verificationUri}`
+    )
+    await keypress()
 
-    console.log(authPrompt)
+    clipboard.writeSync(currentUserCode)
+    await open(verificationUri)
 
-    deviceFlowSpinner.start(`User Code: ${currentUserCode}`)
+    deviceFlowSpinner.start(
+      `Waiting on you to authorized the user code: ${currentUserCode}`
+    )
 
     const accessToken = await pollAccessToken()
     if (accessToken === false) return false // interrupted, don't return anything
 
-    const tokenData = { token: accessToken.access_token, scope: accessToken.scope }
-    deviceFlowSpinner.succeed(`Device flow complete.  Manage at ${oauthAppsBaseUrl}/${options.clientId}`)
+    const tokenData = {
+      token: accessToken.access_token,
+      scope: accessToken.scope
+    }
+    deviceFlowSpinner.succeed(
+      `Device flow complete.  Manage at ${oauthAppsBaseUrl}/${options.clientId}`
+    )
 
     return supplementUserData(tokenData)
 
-    async function initializeNewDeviceFlow () {
+    async function initializeNewDeviceFlow() {
       const deviceCode = await requestDeviceCode()
 
       if (deviceCode.error) {
@@ -152,7 +185,9 @@ async function deviceFlowPrompt (options) {
             break
           }
           case 'unauthorized_client': {
-            error = new Error(`${deviceCode.error_description} Did you enable 'Device authorization flow' for your oAuth application?`)
+            error = new Error(
+              `${deviceCode.error_description} Did you enable 'Device authorization flow' for your oAuth application?`
+            )
             break
           }
           default: {
@@ -176,7 +211,7 @@ async function deviceFlowPrompt (options) {
       currentUserCode = deviceCode.user_code
     }
 
-    async function pollAccessToken () {
+    async function pollAccessToken() {
       let endDeviceFlowDetected
 
       while (!endDeviceFlowDetected) {
@@ -191,10 +226,17 @@ async function deviceFlowPrompt (options) {
           await initializeNewDeviceFlow()
           deviceFlowSpinner.text(`User Code: ${currentUserCode}`)
         }
-        if (data.error === 'unsupported_grant_type') throw new Error(data.error_description || 'Incorrect grant type.')
-        if (data.error === 'incorrect_client_credentials') throw new Error(data.error_description || 'Incorrect clientId.')
-        if (data.error === 'incorrect_device_code') throw new Error(data.error_description || 'Incorrect device code.')
-        if (data.error === 'access_denied') throw new Error(data.error_description || 'The authorized user canceled the access request.')
+        if (data.error === 'unsupported_grant_type')
+          throw new Error(data.error_description || 'Incorrect grant type.')
+        if (data.error === 'incorrect_client_credentials')
+          throw new Error(data.error_description || 'Incorrect clientId.')
+        if (data.error === 'incorrect_device_code')
+          throw new Error(data.error_description || 'Incorrect device code.')
+        if (data.error === 'access_denied')
+          throw new Error(
+            data.error_description ||
+              'The authorized user canceled the access request.'
+          )
         endDeviceFlowDetected = endDeviceFlow // update inner interrupt scope
       }
 
@@ -203,26 +245,32 @@ async function deviceFlowPrompt (options) {
     }
   }
 
-  function requestAccessToken (deviceCode) {
+  function requestAccessToken(deviceCode) {
     const query = {
       client_id: options.clientId,
       device_code: deviceCode,
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
     }
 
-    return fetch(`${accessTokenUrl}?${querystring.stringify(query)}`, defaultReqOptions).then(req => req.json())
+    return fetch(
+      `${accessTokenUrl}?${querystring.stringify(query)}`,
+      defaultReqOptions
+    ).then((req) => req.json())
   }
 
-  function requestDeviceCode () {
+  function requestDeviceCode() {
     const query = {
       client_id: options.clientId
     }
     if (scopes.length) query.scope = scopes.join(' ')
 
-    return fetch(`${deviceCodeUrl}?${querystring.stringify(query)}`, defaultReqOptions).then(req => req.json())
+    return fetch(
+      `${deviceCodeUrl}?${querystring.stringify(query)}`,
+      defaultReqOptions
+    ).then((req) => req.json())
   }
 
-  function requestUser (token) {
+  function requestUser(token) {
     const reqOptions = {
       headers: {
         'User-Agent': options.userAgent || defaultUA,
@@ -232,10 +280,10 @@ async function deviceFlowPrompt (options) {
       method: 'get'
     }
 
-    return fetch(userEndpointUrl, reqOptions).then(req => req.json())
+    return fetch(userEndpointUrl, reqOptions).then((req) => req.json())
   }
 
-  async function supplementUserData (tokenData) {
+  async function supplementUserData(tokenData) {
     // Get user login info
     const userSpinner = ora().start('Retrieving user...')
     try {
@@ -255,20 +303,27 @@ async function deviceFlowPrompt (options) {
 }
 
 // prompt the user for credentials
-async function enterprisePrompt (options) {
+async function enterprisePrompt(options) {
   const defaultNote = 'Node.js command-line app with ghauth'
   const promptName = options.promptName || 'Github Enterprise'
   const accessTokenUrl = options.accessTokenUrl
   const scopes = options.scopes || defaultScopes
-  const usernamePrompt = options.usernamePrompt || `Your ${promptName} username:`
-  const tokenQuestionPrompt = options.tokenQuestionPrompt || 'This appears to be a personal access token, is that correct? [y/n] '
-  const passwordReplaceChar = options.passwordReplaceChar || defaultPasswordReplaceChar
+  const usernamePrompt =
+    options.usernamePrompt || `Your ${promptName} username:`
+  const tokenQuestionPrompt =
+    options.tokenQuestionPrompt ||
+    'This appears to be a personal access token, is that correct? [y/n] '
+  const passwordReplaceChar =
+    options.passwordReplaceChar || defaultPasswordReplaceChar
   const authUrl = options.authUrl || 'https://api.github.com/authorizations'
   let passwordPrompt = options.passwordPrompt
 
   if (!passwordPrompt) {
-    let patMsg = `You may either enter your ${promptName} password or use a 40 character personal access token generated at ${accessTokenUrl} ` +
-      (scopes.length ? `with the following scopes: ${scopes.join(', ')}` : '(no scopes necessary)')
+    let patMsg =
+      `You may either enter your ${promptName} password or use a 40 character personal access token generated at ${accessTokenUrl} ` +
+      (scopes.length
+        ? `with the following scopes: ${scopes.join(', ')}`
+        : '(no scopes necessary)')
     patMsg = newlineify(80, patMsg)
     passwordPrompt = `${patMsg}\nYour ${promptName} password:`
   }
@@ -282,7 +337,11 @@ async function enterprisePrompt (options) {
 
   // password || token
 
-  const pass = await read({ prompt: passwordPrompt, silent: true, replace: passwordReplaceChar })
+  const pass = await read({
+    prompt: passwordPrompt,
+    silent: true,
+    replace: passwordReplaceChar
+  })
 
   if (pass.length === 40) {
     // might be a token?
@@ -329,12 +388,12 @@ async function enterprisePrompt (options) {
     method: 'POST',
     body: JSON.stringify({
       scopes,
-      note: `${(options.note || defaultNote)} (${currentDate})`
+      note: `${options.note || defaultNote} (${currentDate})`
     })
   }
   if (otp) patReqOptions.headers['X-GitHub-OTP'] = otp
 
-  const data = await fetch(authUrl, patReqOptions).then(res => res.json())
+  const data = await fetch(authUrl, patReqOptions).then((res) => res.json())
 
   if (data.message) {
     const error = new Error(data.message)
@@ -349,7 +408,7 @@ async function enterprisePrompt (options) {
   return { user, token: data.token, scope: scopes.join(' ') }
 }
 
-function isEnterprise (authUrl) {
+function isEnterprise(authUrl) {
   if (!authUrl) return false
   const parsedAuthUrl = new URL(authUrl)
   if (parsedAuthUrl.host === 'github.com') return false
@@ -357,7 +416,7 @@ function isEnterprise (authUrl) {
   return true
 }
 
-async function auth (options) {
+async function auth(options) {
   if (typeof options !== 'object') {
     throw new TypeError('ghauth requires an options argument')
   }
@@ -387,7 +446,8 @@ async function auth (options) {
   } else {
     tokenData = await enterprisePrompt(options) // prompt the user for data
   }
-  if (!(tokenData || tokenData.token || tokenData.user)) throw new Error('Authentication error: token or user not generated')
+  if (!(tokenData || tokenData.token || tokenData.user))
+    throw new Error('Authentication error: token or user not generated')
 
   if (options.noSave) {
     return tokenData
@@ -401,10 +461,12 @@ async function auth (options) {
   return tokenData
 }
 
-module.exports = function ghauth (options, callback) {
+module.exports = function ghauth(options, callback) {
   if (typeof callback !== 'function') {
     return auth(options) // promise, it can be awaited
   }
 
-  auth(options).then((data) => callback(null, data)).catch(callback)
+  auth(options)
+    .then((data) => callback(null, data))
+    .catch(callback)
 }
